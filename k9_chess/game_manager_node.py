@@ -7,7 +7,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from k9_chess_interfaces.msg import GameEvent, BoardState
 from k9_chess_interfaces.srv import StartGame, StopGame
-from .utils.lichess_api import LichessAPI
+from k9_chess.lichess import LichessAPI
 import chess
 
 class GameManagerNode(Node):
