@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import setup, find_packages
 
 package_name = 'k9_chess'
@@ -11,9 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'assets'), glob('assets/*')),
-        (os.path.join('share', package_name, 'bt'), glob('bt/*')),
     ],
-    packages=find_packages(exclude=['test']),
     install_requires=[
         'setuptools',
         'rclpy',
