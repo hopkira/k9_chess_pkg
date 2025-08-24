@@ -1,4 +1,4 @@
-# K9 Chess Robot
+# ROS2 Chess Robot Nodes
 
 A ROS 2 chess-playing robot framework integrating **Lichess.org**, **Stockfish**, and a behavior tree orchestrator for interactive play. Designed for K9, the conversational robot, to play chess while remaining responsive to speech and other robot states.
 
