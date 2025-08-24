@@ -9,7 +9,7 @@ def generate_launch_description():
         Node(
             package='k9_chess',
             executable='game_manager_node',
-            name='game_manager_node',
+            name='game_manager',
             output='screen',
             parameters=[],
         ),
@@ -18,7 +18,7 @@ def generate_launch_description():
         Node(
             package='k9_chess',
             executable='chess_engine_node',
-            name='chess_engine_node',
+            name='chess_engine',
             output='screen',
             parameters=[],
         ),
@@ -27,7 +27,7 @@ def generate_launch_description():
         Node(
             package='k9_chess',
             executable='move_sender_node',
-            name='move_sender_node',
+            name='move_sender',
             output='screen',
             parameters=[],
         ),
@@ -36,7 +36,7 @@ def generate_launch_description():
         Node(
             package='k9_chess',
             executable='chess_state_node',
-            name='chess_state_node',
+            name='chess_state',
             output='screen',
             parameters=[],
         ),
