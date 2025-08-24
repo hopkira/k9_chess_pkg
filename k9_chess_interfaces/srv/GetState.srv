@@ -1,5 +1,0 @@
----
-string fen
-string status      # "idle" | "started" | "mate" | "draw" | "aborted"
-bool my_turn
-string game_id

@@ -1,9 +1,0 @@
-# Optional: constrain who to play, rated, time controls
-string color        # "white" | "black" | "random"
-bool rated
-int32 clock_limit   # seconds
-int32 clock_increment
----
-bool ok
-string game_id
-string message

@@ -1,5 +1,0 @@
-string game_id
-string uci_move
----
-bool ok
-string message
