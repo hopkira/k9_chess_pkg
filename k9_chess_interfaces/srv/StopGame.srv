@@ -1,0 +1,5 @@
+string game_id
+string reason     # "resign" | "abort" | "stop"
+---
+bool ok
+string message

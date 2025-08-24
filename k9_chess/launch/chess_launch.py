@@ -1,0 +1,52 @@
+# k9_chess/launch/chess_launch.py
+import os
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        # Game Manager Node
+        Node(
+            package='k9_chess',
+            executable='game_manager_node',
+            name='game_manager_node',
+            output='screen',
+            parameters=[],
+        ),
+
+        # Chess Engine Node
+        Node(
+            package='k9_chess',
+            executable='chess_engine_node',
+            name='chess_engine_node',
+            output='screen',
+            parameters=[],
+        ),
+
+        # Move Sender Node
+        Node(
+            package='k9_chess',
+            executable='move_sender_node',
+            name='move_sender_node',
+            output='screen',
+            parameters=[],
+        ),
+
+        # Chess State Node
+        Node(
+            package='k9_chess',
+            executable='chess_state_node',
+            name='chess_state_node',
+            output='screen',
+            parameters=[],
+        ),
+
+        # Behavior Tree Orchestrator
+        Node(
+            package='k9_chess',
+            executable='chess_bt',
+            name='chess_bt',
+            output='screen',
+            parameters=[],
+        ),
+    ])

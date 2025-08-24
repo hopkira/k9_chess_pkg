@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>k9_chess</name>
+  <version>0.1.0</version>
+  <description>K9 chess robot nodes: game manager, engine, move sender, state node, BT orchestrator.</description>
+  <maintainer email="richard@example.com">Richard Hopkins</maintainer>
+  <license>MIT</license>
+
+  <!-- Build tools -->
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <depend>rclpy</depend>
+  <depend>py_trees</depend>
+  <depend>python-chess</depend>
+  <depend>k9_chess_interfaces</depend>
+
+  <!-- Optional: for async HTTP / requests -->
+  <depend>requests</depend>
+
+  <exec_depend>rclpy</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
