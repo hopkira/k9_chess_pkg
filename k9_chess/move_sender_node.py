@@ -3,7 +3,7 @@ import os
 import rclpy
 from rclpy.node import Node
 from k9_chess_interfaces.srv import SendMove
-from .utils.lichess_api import LichessAPI
+from k9_chess.lichess import LichessAPI
 
 class MoveSenderNode(Node):
     def __init__(self):
