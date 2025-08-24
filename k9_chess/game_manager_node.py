@@ -53,6 +53,11 @@ class GameManagerNode(Node):
                 return
             if not line:
                 return
+            line_str = line.decode('utf-8').strip()
+            if line_str:
+                evt = json.loads(line_str)
+            else:
+                continue  # skip empty lines
             evt = json.loads(line.decode('utf-8'))
             self.handle_event(evt)
 
