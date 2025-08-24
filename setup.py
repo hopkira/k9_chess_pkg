@@ -29,6 +29,7 @@ setup(
             'move_sender = k9_chess.move_sender_node:main',
             'chess_engine = k9_chess.chess_engine_node:main',
             'chess_state = k9_chess.chess_state_node:main',
+            'chess_bt = k9_chess.chess_bt_node:main',
         ],
     },
 )
