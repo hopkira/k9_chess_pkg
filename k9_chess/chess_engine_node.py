@@ -1,4 +1,3 @@
-# k9_chess/chess_engine_node.py
 import os
 import rclpy
 from rclpy.node import Node
@@ -7,12 +6,45 @@ from k9_chess_interfaces.action import ComputeMove
 import chess
 import chess.engine
 import chess.polyglot
+import asyncio
 
 class ChessEngineNode(Node):
+    """
+    ROS2 node wrapping a chess engine (Stockfish/Titan) providing an action server
+    to compute moves. Supports polyglot book moves, infinite analysis with time budget,
+    CPU core limiting, and incremental feedback.
+    """
     def __init__(self):
         super().__init__('chess_engine')
-        stockfish_path = os.getenv('STOCKFISH_PATH', 'stockfish')
-        self._engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+
+        # Declare parameter for number of threads (CPU cores) to use
+        self.declare_parameter('num_threads', 2)
+        self.num_threads = self.get_parameter('num_threads').value
+
+        # Paths from assets folder (installed via package.xml)
+        stockfish_path = os.path.join(
+            os.path.dirname(__file__), '..', 'assets', 'stockfish'
+        )
+        titan_path = os.path.join(
+            os.path.dirname(__file__), '..', 'assets', 'titan'
+        )
+
+        # Default to Stockfish
+        engine_path = stockfish_path if os.path.exists(stockfish_path) else titan_path
+        self.get_logger().info(f"Starting chess engine at: {engine_path} using {self.num_threads} threads")
+
+        # Start engine with thread constraint
+        self._engine = chess.engine.SimpleEngine.popen_uci(
+            engine_path, setpgrp=True  # separate process group for better signal handling
+        )
+        self._engine.configure({'Threads': self.num_threads})
+
+        # Path to polyglot book
+        self._book_path = os.path.join(
+            os.path.dirname(__file__), '..', 'assets', 'book.bin'
+        )
+
+        # Action server for ComputeMove
         self._action = ActionServer(
             self,
             ComputeMove,
@@ -20,13 +52,23 @@ class ChessEngineNode(Node):
             execute_callback=self.execute_cb,
             cancel_callback=self.cancel_cb
         )
-        self._book_path = os.getenv('POLYGLOT_BOOK', '')
+
         self.get_logger().info("ChessEngineNode ready.")
 
     def cancel_cb(self, goal_handle):
+        """
+        Accept all cancel requests immediately.
+        """
         return CancelResponse.ACCEPT
 
     async def execute_cb(self, goal_handle):
+        """
+        Execute a move computation request. Supports:
+        - Polyglot book moves
+        - Infinite analysis constrained by think_time_sec
+        - CPU thread limiting
+        - Incremental feedback for BT integration
+        """
         goal = goal_handle.request
         board = chess.Board(goal.fen)
         feedback = ComputeMove.Feedback()
@@ -37,36 +79,52 @@ class ChessEngineNode(Node):
         is_mate = False
         mate_in = 0
 
-        # 1. Try book move if requested
-        if goal.use_book and self._book_path and os.path.exists(self._book_path):
+        # 1. Try opening book move
+        if goal.use_book and os.path.exists(self._book_path):
             try:
                 with chess.polyglot.open_reader(self._book_path) as reader:
                     entry = reader.weighted_choice(board)
                     best_move = entry.move
                     self.get_logger().info(f"Book move chosen: {best_move.uci()}")
             except Exception as e:
-                self.get_logger().warn(f"No book move: {e}")
+                self.get_logger().warn(f"No book move available: {e}")
 
-        # 2. Otherwise, ask Stockfish
+        # 2. Infinite analysis with time budget
         if not best_move:
+            think_time = goal.think_time_sec or 1.0
+            start_time = self.get_clock().now().nanoseconds / 1e9
+
             try:
-                limit = chess.engine.Limit(time=goal.think_time_sec or 1.0)
-                info = await self._engine.analyse(board, limit, info=chess.engine.INFO_ALL)
-                move = info.get("pv", [None])[0]
-                score = info["score"].pov(board.turn)
-                best_move = move
+                analysis = self._engine.analysis(
+                    board,
+                    chess.engine.Limit(infinite=True)
+                )
 
-                if score.is_mate():
-                    is_mate = True
-                    mate_in = score.mate()
-                    eval_cp = 0.0
-                else:
-                    eval_cp = score.score(mate_score=100000) / 100.0
+                async for info in analysis:
+                    # Update best move from principal variation
+                    if "pv" in info and info["pv"]:
+                        move = info["pv"][0]
+                        score = info.get("score", None)
+                        if score:
+                            pov_score = score.pov(board.turn)
+                            if pov_score.is_mate():
+                                is_mate = True
+                                mate_in = pov_score.mate()
+                                eval_cp = 0.0
+                            else:
+                                eval_cp = pov_score.score(mate_score=100000) / 100.0
 
-                feedback.depth = info.get("depth", 0)
-                feedback.nps = info.get("nps", 0.0)
-                feedback.eval_cp_live = eval_cp
-                goal_handle.publish_feedback(feedback)
+                        feedback.eval_cp_live = eval_cp
+                        goal_handle.publish_feedback(feedback)
+                        best_move = move
+
+                    # Stop if time budget exceeded
+                    elapsed = self.get_clock().now().nanoseconds / 1e9 - start_time
+                    if elapsed >= think_time:
+                        break
+
+                # Stop the engine search
+                await analysis.stop()
 
             except Exception as e:
                 self.get_logger().error(f"Engine analysis failed: {e}")
@@ -83,11 +141,15 @@ class ChessEngineNode(Node):
         return result
 
     def destroy_node(self):
+        """
+        Cleanly terminate engine subprocess on node destruction.
+        """
         try:
             self._engine.quit()
         except Exception:
             pass
         super().destroy_node()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -99,6 +161,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
