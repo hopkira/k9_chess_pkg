@@ -6,9 +6,6 @@ from k9_chess_interfaces.action import ComputeMove
 from k9_chess_interfaces.msg import BoardState
 from k9_chess_interfaces.srv import GetState
 import py_trees
-import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 class ChessBT(Node):
     def __init__(self):
@@ -17,10 +14,10 @@ class ChessBT(Node):
         # Async Action client for ComputeMove
         self._action_client = ActionClient(self, ComputeMove, 'chess/compute_move')
 
-        # Publisher to update board state
+        # Publisher to update board state with moves
         self._board_pub = self.create_publisher(BoardState, 'chess/board_state', 10)
 
-        # Client to query current state
+        # Service client to query current state
         self._state_client = self.create_client(GetState, 'chess/get_state')
         while not self._state_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warn("Waiting for ChessState service...")
@@ -35,16 +32,11 @@ class ChessBT(Node):
         # Timer to tick the BT
         self._timer = self.create_timer(0.5, self.tick_tree)
 
-        # Create background asyncio loop in a thread
-        self._loop = asyncio.new_event_loop()
-        t = threading.Thread(target=self._loop.run_forever, daemon=True)
-        t.start()
-
     def create_tree(self):
         root = py_trees.composites.Sequence(name="ChessRoot", memory=False)
         selector = py_trees.composites.Selector(name="SelectMove", memory=True)
 
-        compute_move = ChessComputeTitanMove(self)
+        compute_move = ChessComputeMove(self)
         update_state = ChessUpdateBoardState(self)
 
         selector.add_children([compute_move])
@@ -59,7 +51,9 @@ class ChessBT(Node):
         req = GetState.Request()
         future = self._state_client.call_async(req)
         response = await future
-        return response.fen if response else None
+        if response:
+            return response.fen, response.my_turn
+        return None, None
 
     async def request_move_async(self, fen, think_time_sec=5.0):
         """Request a move from the chess engine."""
@@ -77,18 +71,10 @@ class ChessBT(Node):
         result = await result_future
         return result.result
 
-    def publish_move(self, move_uci):
-        """Publish the chosen move to ChessStateNode."""
-        msg = BoardState()
-        msg.fen = move_uci  # BT only publishes move; ChessStateNode updates FEN
-        msg.white_to_move = True  # refine based on actual turn
-        self._board_pub.publish(msg)
-        self.blackboard.set("last_move", move_uci)
-
 # --- Leaf BT nodes ---
-class ChessComputeTitanMove(py_trees.behaviour.Behaviour):
+class ChessComputeMove(py_trees.behaviour.Behaviour):
     def __init__(self, node):
-        super().__init__("ComputeTitanMove")
+        super().__init__("ComputeMove")
         self.node = node
         self._running = False
 
@@ -96,21 +82,30 @@ class ChessComputeTitanMove(py_trees.behaviour.Behaviour):
         if self._running:
             return py_trees.common.Status.RUNNING
 
-        # Schedule async task on node's loop
+        # Schedule async task using rclpy executor
         self._running = True
-        asyncio.run_coroutine_threadsafe(self._do_request(), self.node._loop)
+        self.node.get_clock().create_timer(0.01, lambda: self._start_async())
         return py_trees.common.Status.RUNNING
 
+    def _start_async(self):
+        import asyncio
+        asyncio.create_task(self._do_request())
+
     async def _do_request(self):
-        fen = await self.node.get_current_fen()
+        fen, my_turn = await self.node.get_current_fen()
         if not fen:
             self.node.get_logger().warn("No FEN available from ChessStateNode")
             self._running = False
             return
 
+        # Request move from engine
         result = await self.node.request_move_async(fen, think_time_sec=2.0)
         if result and result.best_move_uci:
-            self.node.publish_move(result.best_move_uci)
+            # Publish only the move; ChessStateNode will update full FEN
+            msg = BoardState()
+            msg.move_uci = result.best_move_uci
+            self.node._board_pub.publish(msg)
+            self.node.blackboard.set("last_move", result.best_move_uci)
 
         self._running = False
 
