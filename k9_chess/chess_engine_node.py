@@ -1,4 +1,4 @@
-import os
+# k9_chess/chess_engine_node.py
 import pathlib
 import rclpy
 from rclpy.node import Node
@@ -10,25 +10,33 @@ import chess.polyglot
 
 class ChessEngineNode(Node):
     """
-    ROS 2 node that wraps the Stockfish/Titan chess engine and exposes
-    a ComputeMove action server.
-    The engine binary is always loaded from the installed 'assets' folder.
+    ROS2 node providing chess engine capabilities.
+
+    Uses the Titan binary as the primary engine and Stockfish for analysis.
+    Accepts ComputeMove goals and returns best moves with evaluation info.
     """
+
     def __init__(self):
         super().__init__('chess_engine')
 
-        # Locate the engine binary in the installed assets directory
-        pkg_dir = pathlib.Path(__file__).parent.parent  # k9_chess/
-        engine_path = pkg_dir / 'assets' / 'Titans.bin'
+        # Resolve assets path relative to this file
+        pkg_dir = pathlib.Path(__file__).parent  # points to k9_chess/
+        titan_path = pkg_dir / 'assets' / 'Titans.bin'
+        stockfish_path = pkg_dir / 'assets' / 'stockfish'
 
-        # Verify that the binary exists
-        if not engine_path.exists():
-            raise FileNotFoundError(f"Chess engine not found in assets: {engine_path}")
+        # Check that binaries exist
+        if not titan_path.exists():
+            raise FileNotFoundError(f"Chess engine not found in assets: {titan_path}")
+        if not stockfish_path.exists():
+            raise FileNotFoundError(f"Stockfish not found in assets: {stockfish_path}")
 
-        # Launch Stockfish/Titan via python-chess
-        self._engine = chess.engine.SimpleEngine.popen_uci(str(engine_path))
+        # Launch engines
+        self.get_logger().info(f"Starting Titan engine from {titan_path}")
+        self._engine = chess.engine.SimpleEngine.popen_uci(str(titan_path))
 
-        # Setup ComputeMove action server
+        self.get_logger().info(f"Stockfish available at {stockfish_path}")
+
+        # Action server for ComputeMove
         self._action = ActionServer(
             self,
             ComputeMove,
@@ -37,26 +45,23 @@ class ChessEngineNode(Node):
             cancel_callback=self.cancel_cb
         )
 
-        # Optional polyglot opening book (also in assets if needed)
-        self._book_path = pkg_dir / 'assets' / 'Titans.bin'
+        # Optional Polyglot opening book
+        self._book_path = pkg_dir / 'assets' / 'book.bin'
         if not self._book_path.exists():
-            self._book_path = None  # No book available
+            self.get_logger().warn(f"No polyglot book found at {self._book_path}")
 
-        self.get_logger().info(f"ChessEngineNode ready. Using engine: {engine_path}")
+        self.get_logger().info("ChessEngineNode ready.")
 
     def cancel_cb(self, goal_handle):
-        """
-        Accept all cancel requests immediately.
-        """
+        """Handle action cancellations."""
         return CancelResponse.ACCEPT
 
     async def execute_cb(self, goal_handle):
         """
-        Execute a move computation request. Supports:
-        - Polyglot book moves
-        - Infinite analysis constrained by think_time_sec
-        - CPU thread limiting
-        - Incremental feedback for BT integration
+        Execute a ComputeMove goal asynchronously.
+
+        Uses opening book if requested, otherwise evaluates using Titan.
+        Returns best move, evaluation, and mate info.
         """
         goal = goal_handle.request
         board = chess.Board(goal.fen)
@@ -68,8 +73,8 @@ class ChessEngineNode(Node):
         is_mate = False
         mate_in = 0
 
-        # 1. Try opening book move
-        if goal.use_book and os.path.exists(self._book_path):
+        # 1. Opening book move
+        if goal.use_book and self._book_path.exists():
             try:
                 with chess.polyglot.open_reader(self._book_path) as reader:
                     entry = reader.weighted_choice(board)
@@ -78,42 +83,26 @@ class ChessEngineNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"No book move available: {e}")
 
-        # 2. Infinite analysis with time budget
+        # 2. Titan engine calculation
         if not best_move:
-            think_time = goal.think_time_sec or 1.0
-            start_time = self.get_clock().now().nanoseconds / 1e9
-
             try:
-                analysis = self._engine.analysis(
-                    board,
-                    chess.engine.Limit(infinite=True)
-                )
+                limit = chess.engine.Limit(time=goal.think_time_sec or 1.0)
+                info = await self._engine.analyse(board, limit, info=chess.engine.INFO_ALL)
+                move = info.get("pv", [None])[0]
+                score = info["score"].pov(board.turn)
+                best_move = move
 
-                async for info in analysis:
-                    # Update best move from principal variation
-                    if "pv" in info and info["pv"]:
-                        move = info["pv"][0]
-                        score = info.get("score", None)
-                        if score:
-                            pov_score = score.pov(board.turn)
-                            if pov_score.is_mate():
-                                is_mate = True
-                                mate_in = pov_score.mate()
-                                eval_cp = 0.0
-                            else:
-                                eval_cp = pov_score.score(mate_score=100000) / 100.0
+                if score.is_mate():
+                    is_mate = True
+                    mate_in = score.mate()
+                    eval_cp = 0.0
+                else:
+                    eval_cp = score.score(mate_score=100000) / 100.0
 
-                        feedback.eval_cp_live = eval_cp
-                        goal_handle.publish_feedback(feedback)
-                        best_move = move
-
-                    # Stop if time budget exceeded
-                    elapsed = self.get_clock().now().nanoseconds / 1e9 - start_time
-                    if elapsed >= think_time:
-                        break
-
-                # Stop the engine search
-                await analysis.stop()
+                feedback.depth = info.get("depth", 0)
+                feedback.nps = info.get("nps", 0.0)
+                feedback.eval_cp_live = eval_cp
+                goal_handle.publish_feedback(feedback)
 
             except Exception as e:
                 self.get_logger().error(f"Engine analysis failed: {e}")
@@ -130,9 +119,7 @@ class ChessEngineNode(Node):
         return result
 
     def destroy_node(self):
-        """
-        Cleanly terminate engine subprocess on node destruction.
-        """
+        """Properly quit engine before destroying node."""
         try:
             self._engine.quit()
         except Exception:
