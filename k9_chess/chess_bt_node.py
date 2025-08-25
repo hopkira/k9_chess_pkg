@@ -7,7 +7,8 @@ from k9_chess_interfaces.msg import BoardState
 from k9_chess_interfaces.srv import GetState
 import py_trees
 import asyncio
-import chess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 class ChessBT(Node):
     def __init__(self):
@@ -34,11 +35,16 @@ class ChessBT(Node):
         # Timer to tick the BT
         self._timer = self.create_timer(0.5, self.tick_tree)
 
+        # Create background asyncio loop in a thread
+        self._loop = asyncio.new_event_loop()
+        t = threading.Thread(target=self._loop.run_forever, daemon=True)
+        t.start()
+
     def create_tree(self):
         root = py_trees.composites.Sequence(name="ChessRoot", memory=False)
         selector = py_trees.composites.Selector(name="SelectMove", memory=True)
 
-        compute_move = ChessComputeMove(self)
+        compute_move = ChessComputeTitanMove(self)
         update_state = ChessUpdateBoardState(self)
 
         selector.add_children([compute_move])
@@ -48,14 +54,12 @@ class ChessBT(Node):
     def tick_tree(self):
         self.tree.tick_once()
 
-    async def get_current_state(self):
-        """Query ChessStateNode for current FEN and turn."""
+    async def get_current_fen(self):
+        """Query ChessStateNode for the current FEN."""
         req = GetState.Request()
         future = self._state_client.call_async(req)
         response = await future
-        if response:
-            return response.fen, response.my_turn
-        return None, None
+        return response.fen if response else None
 
     async def request_move_async(self, fen, think_time_sec=5.0):
         """Request a move from the chess engine."""
@@ -73,30 +77,18 @@ class ChessBT(Node):
         result = await result_future
         return result.result
 
-    def publish_move(self, move_uci, current_fen, white_to_move):
-        """Apply move to FEN, compute new FEN, and publish to ChessStateNode."""
-        board = chess.Board(current_fen)
-        try:
-            move = chess.Move.from_uci(move_uci)
-            if move not in board.legal_moves:
-                self.get_logger().warn(f"Illegal move attempted: {move_uci}")
-                return
-            board.push(move)
-        except Exception as e:
-            self.get_logger().error(f"Failed to apply move {move_uci}: {e}")
-            return
-
+    def publish_move(self, move_uci):
+        """Publish the chosen move to ChessStateNode."""
         msg = BoardState()
-        msg.fen = board.fen()
-        msg.white_to_move = board.turn  # Automatically correct turn
+        msg.fen = move_uci  # BT only publishes move; ChessStateNode updates FEN
+        msg.white_to_move = True  # refine based on actual turn
         self._board_pub.publish(msg)
         self.blackboard.set("last_move", move_uci)
-        self.get_logger().info(f"Published move {move_uci}, new FEN: {msg.fen}")
 
 # --- Leaf BT nodes ---
-class ChessComputeMove(py_trees.behaviour.Behaviour):
+class ChessComputeTitanMove(py_trees.behaviour.Behaviour):
     def __init__(self, node):
-        super().__init__("ComputeMove")
+        super().__init__("ComputeTitanMove")
         self.node = node
         self._running = False
 
@@ -104,13 +96,13 @@ class ChessComputeMove(py_trees.behaviour.Behaviour):
         if self._running:
             return py_trees.common.Status.RUNNING
 
-        # Schedule async task to query state and request move
+        # Schedule async task on node's loop
         self._running = True
-        asyncio.create_task(self._do_request())
+        asyncio.run_coroutine_threadsafe(self._do_request(), self.node._loop)
         return py_trees.common.Status.RUNNING
 
     async def _do_request(self):
-        fen, white_to_move = await self.node.get_current_state()
+        fen = await self.node.get_current_fen()
         if not fen:
             self.node.get_logger().warn("No FEN available from ChessStateNode")
             self._running = False
@@ -118,7 +110,7 @@ class ChessComputeMove(py_trees.behaviour.Behaviour):
 
         result = await self.node.request_move_async(fen, think_time_sec=2.0)
         if result and result.best_move_uci:
-            self.node.publish_move(result.best_move_uci, fen, white_to_move)
+            self.node.publish_move(result.best_move_uci)
 
         self._running = False
 
