@@ -20,24 +20,24 @@ class ChessEngineNode(Node):
     def __init__(self):
         super().__init__('chess_engine')
 
-
+        # Assets directory
         assets_dir = pathlib.Path(get_package_share_directory('k9_chess')) / 'assets'
         titan_path = assets_dir / 'Titans.bin'
         stockfish_path = assets_dir / 'stockfish'
 
-        # Check that binaries exist
+        # Validate files
         if not titan_path.exists():
             raise FileNotFoundError(f"Chess engine not found in assets: {titan_path}")
         if not stockfish_path.exists():
-            raise FileNotFoundError(f"Stockfish not found in assets: {stockfish_path}")
+            self.get_logger().warn(f"Stockfish not found in assets: {stockfish_path}")
+        if not self._book_path.exists():
+            self.get_logger().warn(f"No polyglot book found at {self._book_path}")
 
-        # Launch engines
+        # Launch Titan engine
         self.get_logger().info(f"Starting Titan engine from {titan_path}")
         self._engine = chess.engine.SimpleEngine.popen_uci(str(titan_path))
 
-        self.get_logger().info(f"Stockfish available at {stockfish_path}")
-
-        # Action server for ComputeMove
+        # Action server
         self._action = ActionServer(
             self,
             ComputeMove,
@@ -46,11 +46,6 @@ class ChessEngineNode(Node):
             cancel_callback=self.cancel_cb
         )
 
-        # Optional Polyglot opening book
-        self._book_path = pkg_dir / 'assets' / 'book.bin'
-        if not self._book_path.exists():
-            self.get_logger().warn(f"No polyglot book found at {self._book_path}")
-
         self.get_logger().info("ChessEngineNode ready.")
 
     def cancel_cb(self, goal_handle):
@@ -58,12 +53,7 @@ class ChessEngineNode(Node):
         return CancelResponse.ACCEPT
 
     async def execute_cb(self, goal_handle):
-        """
-        Execute a ComputeMove goal asynchronously.
-
-        Uses opening book if requested, otherwise evaluates using Titan.
-        Returns best move, evaluation, and mate info.
-        """
+        """Compute a move asynchronously for the given FEN."""
         goal = goal_handle.request
         board = chess.Board(goal.fen)
         feedback = ComputeMove.Feedback()
@@ -74,7 +64,7 @@ class ChessEngineNode(Node):
         is_mate = False
         mate_in = 0
 
-        # 1. Opening book move
+        # 1. Try opening book
         if goal.use_book and self._book_path.exists():
             try:
                 with chess.polyglot.open_reader(self._book_path) as reader:
@@ -84,7 +74,7 @@ class ChessEngineNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"No book move available: {e}")
 
-        # 2. Titan engine calculation
+        # 2. Titan engine analysis if no book move
         if not best_move:
             try:
                 limit = chess.engine.Limit(time=goal.think_time_sec or 1.0)
@@ -100,6 +90,7 @@ class ChessEngineNode(Node):
                 else:
                     eval_cp = score.score(mate_score=100000) / 100.0
 
+                # Publish feedback
                 feedback.depth = info.get("depth", 0)
                 feedback.nps = info.get("nps", 0.0)
                 feedback.eval_cp_live = eval_cp
