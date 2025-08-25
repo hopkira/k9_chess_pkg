@@ -1,175 +1,146 @@
-# k9_chess/bt/chess_bt.py
+# k9_chess/chess_bt_node.py
 import rclpy
 from rclpy.node import Node
-from k9_chess_interfaces.srv import GetState, SendMove
+from rclpy.action import ActionClient
 from k9_chess_interfaces.action import ComputeMove
+from k9_chess_interfaces.msg import BoardState
+from k9_chess_interfaces.srv import GetState
 import py_trees
-import asyncio
-from k9_chess.action_client_wrapper import ActionClientWrapper  # Updated import
+from rclpy.task import create_task
+import chess
 
 class ChessBT(Node):
-    """
-    Behavior Tree node for playing chess on Lichess.
-
-    - Uses a ComputeMoveLeaf to request moves from Stockfish in infinite mode.
-    - Uses SendMoveLeaf to publish moves to Lichess via a service.
-    - Ticks asynchronously to allow conversation or other behaviors to interrupt.
-    """
     def __init__(self):
-        super().__init__('chess_behavior_tree')
-        self._get_state_cli = self.create_client(GetState, 'chess/get_state')
-        self._send_move_cli = self.create_client(SendMove, 'chess/send_move')
-        self._compute_move_ac = ActionClientWrapper(self, ComputeMove, 'chess/compute_move')
-        self.get_logger().info("Chess BT node ready.")
+        super().__init__('chess_bt')
 
-        # Build BT
+        # Async Action client for ComputeMove
+        self._action_client = ActionClient(self, ComputeMove, 'chess/compute_move')
+
+        # Publisher to update board state
+        self._board_pub = self.create_publisher(BoardState, 'chess/board_state', 10)
+
+        # Client to query current state
+        self._state_client = self.create_client(GetState, 'chess/get_state')
+        while not self._state_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn("Waiting for ChessState service...")
+
+        # Blackboard for BT
+        self.blackboard = py_trees.blackboard.Blackboard()
+        self.blackboard.set("last_move", None)
+
+        # Build the behavior tree
         self.tree = self.create_tree()
 
+        # Timer to tick the BT
+        self._timer = self.create_timer(0.5, self.tick_tree)
+
     def create_tree(self):
-        """Builds the py_trees behavior tree for playing chess."""
-        root = py_trees.composites.Sequence("ChessRoot")
+        root = py_trees.composites.Sequence(name="ChessRoot", memory=False)
+        selector = py_trees.composites.Selector(name="SelectMove", memory=True)
 
-        # Wait until a game has started
-        wait_game = py_trees.behaviours.CheckBlackboardVariable(
-            name="WaitGameStart",
-            variable_name="game_started",
-            expected_value=True
-        )
+        compute_move = ChessComputeMove(self)
+        update_state = ChessUpdateBoardState(self)
 
-        take_turn = py_trees.composites.Sequence("TakeTurn")
-
-        # Check if it is our turn
-        check_my_turn = py_trees.behaviours.CheckBlackboardVariable(
-            name="CheckMyTurn",
-            variable_name="my_turn",
-            expected_value=True
-        )
-
-        # Compute move (infinite mode) and send move
-        compute_move = ComputeMoveLeaf("ComputeMove", self._compute_move_ac)
-        send_move = SendMoveLeaf("SendMove", self._send_move_cli)
-
-        take_turn.add_children([check_my_turn, compute_move, send_move])
-        root.add_children([wait_game, take_turn])
+        selector.add_children([compute_move])
+        root.add_children([selector, update_state])
         return root
 
-    async def tick_loop(self):
-        """Main asynchronous tick loop."""
-        while rclpy.ok():
-            # Update blackboard with current game state
-            state = await self.get_state()
-            bb = py_trees.blackboard.Blackboard()
-            bb.set("game_started", state.status == "started")
-            bb.set("my_turn", state.my_turn)
-            bb.set("fen", state.fen)
-            bb.set("game_id", state.game_id)
+    def tick_tree(self):
+        self.tree.tick_once()
 
-            # Tick the tree once
-            self.tree.tick_once()
-            await asyncio.sleep(0.5)
-
-    async def get_state(self):
-        """Request the latest chess state from the ChessStateNode."""
-        while not self._get_state_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Waiting for GetState service...")
+    async def get_current_state(self):
+        """Query ChessStateNode for current FEN and turn."""
         req = GetState.Request()
-        future = self._get_state_cli.call_async(req)
-        await asyncio.wrap_future(future)
-        return future.result()
+        future = self._state_client.call_async(req)
+        response = await future
+        if response:
+            return response.fen, response.my_turn
+        return None, None
 
+    async def request_move_async(self, fen, think_time_sec=5.0):
+        """Request a move from the chess engine."""
+        goal_msg = ComputeMove.Goal()
+        goal_msg.fen = fen
+        goal_msg.think_time_sec = think_time_sec
 
-class ComputeMoveLeaf(py_trees.behaviour.Behaviour):
-    """
-    Leaf node that requests a move from ChessEngineNode in infinite mode.
-    Allows the tree to continue ticking while Stockfish computes.
-    """
-    def __init__(self, name, ac, max_think_time=None):
-        super().__init__(name)
-        self._ac = ac
-        self._max_think_time = max_think_time
-        self._goal_handle = None
-        self._start_time = None
-        self._move_found = False
+        future = self._action_client.send_goal_async(goal_msg)
+        goal_handle = await future
+        if not goal_handle.accepted:
+            self.get_logger().error("ComputeMove goal rejected")
+            return None
 
-    def initialise(self):
-        """Send goal to engine when leaf first ticks."""
-        bb = py_trees.blackboard.Blackboard()
-        fen = bb.get("fen")
-        if not fen:
-            self._move_found = False
+        result_future = goal_handle.get_result_async()
+        result = await result_future
+        return result.result
+
+    def publish_move(self, move_uci, current_fen, white_to_move):
+        """Apply move to FEN, compute new FEN, and publish to ChessStateNode."""
+        board = chess.Board(current_fen)
+        try:
+            move = chess.Move.from_uci(move_uci)
+            if move not in board.legal_moves:
+                self.get_logger().warn(f"Illegal move attempted: {move_uci}")
+                return
+            board.push(move)
+        except Exception as e:
+            self.get_logger().error(f"Failed to apply move {move_uci}: {e}")
             return
 
-        goal = ComputeMove.Goal()
-        goal.fen = fen
-        goal.use_book = True
-        goal.infinite_mode = True  # Stockfish infinite mode
+        msg = BoardState()
+        msg.fen = board.fen()
+        msg.white_to_move = board.turn  # Automatically correct turn
+        self._board_pub.publish(msg)
+        self.blackboard.set("last_move", move_uci)
+        self.get_logger().info(f"Published move {move_uci}, new FEN: {msg.fen}")
 
-        self._goal_handle = self._ac.send_goal_async(goal)
-        self._start_time = self.get_time()
-        self._move_found = False
+# --- Leaf BT nodes ---
+class ChessComputeMove(py_trees.behaviour.Behaviour):
+    def __init__(self, node):
+        super().__init__("ComputeMove")
+        self.node = node
+        self._running = False
 
     def update(self):
-        """Check if move is ready, still computing, or timed out."""
-        if not self._goal_handle:
-            return py_trees.common.Status.FAILURE
+        if self._running:
+            return py_trees.common.Status.RUNNING
 
-        if self._goal_handle.done():
-            result = self._goal_handle.result()
-            if result:
-                bb = py_trees.blackboard.Blackboard()
-                bb.set("best_move", result.best_move_uci)
-                self._move_found = True
-                return py_trees.common.Status.SUCCESS
-            else:
-                return py_trees.common.Status.FAILURE
-
-        # Optional max thinking time
-        if self._max_think_time and (self.get_time() - self._start_time) > self._max_think_time:
-            self._ac.cancel_goal(self._goal_handle)
-            return py_trees.common.Status.FAILURE
-
+        # Schedule async task to query state and request move
+        self._running = True
+        create_task(self._do_request())
         return py_trees.common.Status.RUNNING
 
-    def get_time(self):
-        import time
-        return time.time()
+    async def _do_request(self):
+        fen, white_to_move = await self.node.get_current_state()
+        if not fen:
+            self.node.get_logger().warn("No FEN available from ChessStateNode")
+            self._running = False
+            return
 
+        result = await self.node.request_move_async(fen, think_time_sec=2.0)
+        if result and result.best_move_uci:
+            self.node.publish_move(result.best_move_uci, fen, white_to_move)
 
-class SendMoveLeaf(py_trees.behaviour.Behaviour):
-    """
-    Leaf node that sends the computed move to Lichess using the SendMove service.
-    """
-    def __init__(self, name, client):
-        super().__init__(name)
-        self._client = client
+        self._running = False
+
+class ChessUpdateBoardState(py_trees.behaviour.Behaviour):
+    def __init__(self, node):
+        super().__init__("UpdateBoardState")
+        self.node = node
 
     def update(self):
-        bb = py_trees.blackboard.Blackboard()
-        move = bb.get("best_move")
-        game_id = bb.get("game_id")
-        if not move or not game_id:
-            return py_trees.common.Status.FAILURE
+        last_move = self.node.blackboard.get("last_move")
+        if last_move:
+            self.node.get_logger().info(f"Last move applied: {last_move}")
+        return py_trees.common.Status.SUCCESS
 
-        req = SendMove.Request()
-        req.game_id = game_id
-        req.uci_move = move
-
-        future = self._client.call_async(req)
-        rclpy.spin_until_future_complete(self._client, future)
-        if future.result() and future.result().ok:
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.FAILURE
-
-
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = ChessBT()
     try:
-        asyncio.run(node.tick_loop())
+        rclpy.spin(node)
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
