@@ -13,7 +13,7 @@ class ChessEngineNode(Node):
     """
     ROS2 node providing chess engine capabilities.
 
-    Uses the Titan binary as the primary engine and Stockfish for analysis.
+    Uses Stockfish as the engine and Titans.bin as a Polyglot book for opening moves.
     Accepts ComputeMove goals and returns best moves with evaluation info.
     """
 
@@ -22,20 +22,18 @@ class ChessEngineNode(Node):
 
         # Assets directory
         assets_dir = pathlib.Path(get_package_share_directory('k9_chess')) / 'assets'
-        titan_path = assets_dir / 'Titans.bin'
+        self._book_path = assets_dir / 'Titans.bin'
         stockfish_path = assets_dir / 'stockfish'
 
         # Validate files
-        if not titan_path.exists():
-            raise FileNotFoundError(f"Chess engine not found in assets: {titan_path}")
-        if not stockfish_path.exists():
-            self.get_logger().warn(f"Stockfish not found in assets: {stockfish_path}")
         if not self._book_path.exists():
-            self.get_logger().warn(f"No polyglot book found at {self._book_path}")
+            raise FileNotFoundError(f"Book moves not found in assets: {self._book_path}")
+        if not stockfish_path.exists():
+            raise FileNotFoundError(f"Stockfish engine not found in assets: {stockfish_path}")
 
-        # Launch Titan engine
-        self.get_logger().info(f"Starting Titan engine from {titan_path}")
-        self._engine = chess.engine.SimpleEngine.popen_uci(str(titan_path))
+        # Launch Stockfish engine
+        self.get_logger().info(f"Starting Stockfish engine from {stockfish_path}")
+        self._engine = chess.engine.SimpleEngine.popen_uci(str(stockfish_path))
 
         # Action server
         self._action = ActionServer(
@@ -74,7 +72,7 @@ class ChessEngineNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"No book move available: {e}")
 
-        # 2. Titan engine analysis if no book move
+        # 2. Stockfish engine analysis if no book move
         if not best_move:
             try:
                 limit = chess.engine.Limit(time=goal.think_time_sec or 1.0)
