@@ -1,4 +1,5 @@
 import os
+import pathlib
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
@@ -6,45 +7,28 @@ from k9_chess_interfaces.action import ComputeMove
 import chess
 import chess.engine
 import chess.polyglot
-import asyncio
 
 class ChessEngineNode(Node):
     """
-    ROS2 node wrapping a chess engine (Stockfish/Titan) providing an action server
-    to compute moves. Supports polyglot book moves, infinite analysis with time budget,
-    CPU core limiting, and incremental feedback.
+    ROS 2 node that wraps the Stockfish/Titan chess engine and exposes
+    a ComputeMove action server.
+    The engine binary is always loaded from the installed 'assets' folder.
     """
     def __init__(self):
         super().__init__('chess_engine')
 
-        # Declare parameter for number of threads (CPU cores) to use
-        self.declare_parameter('num_threads', 2)
-        self.num_threads = self.get_parameter('num_threads').value
+        # Locate the engine binary in the installed assets directory
+        pkg_dir = pathlib.Path(__file__).parent.parent  # k9_chess/
+        engine_path = pkg_dir / 'assets' / 'Titans.bin'
 
-        # Paths from assets folder (installed via package.xml)
-        stockfish_path = os.path.join(
-            os.path.dirname(__file__), '..', 'assets', 'stockfish'
-        )
-        titan_path = os.path.join(
-            os.path.dirname(__file__), '..', 'assets', 'titan'
-        )
+        # Verify that the binary exists
+        if not engine_path.exists():
+            raise FileNotFoundError(f"Chess engine not found in assets: {engine_path}")
 
-        # Default to Stockfish
-        engine_path = stockfish_path if os.path.exists(stockfish_path) else titan_path
-        self.get_logger().info(f"Starting chess engine at: {engine_path} using {self.num_threads} threads")
+        # Launch Stockfish/Titan via python-chess
+        self._engine = chess.engine.SimpleEngine.popen_uci(str(engine_path))
 
-        # Start engine with thread constraint
-        self._engine = chess.engine.SimpleEngine.popen_uci(
-            engine_path, setpgrp=True  # separate process group for better signal handling
-        )
-        self._engine.configure({'Threads': self.num_threads})
-
-        # Path to polyglot book
-        self._book_path = os.path.join(
-            os.path.dirname(__file__), '..', 'assets', 'book.bin'
-        )
-
-        # Action server for ComputeMove
+        # Setup ComputeMove action server
         self._action = ActionServer(
             self,
             ComputeMove,
@@ -53,7 +37,12 @@ class ChessEngineNode(Node):
             cancel_callback=self.cancel_cb
         )
 
-        self.get_logger().info("ChessEngineNode ready.")
+        # Optional polyglot opening book (also in assets if needed)
+        self._book_path = pkg_dir / 'assets' / 'Titans.bin'
+        if not self._book_path.exists():
+            self._book_path = None  # No book available
+
+        self.get_logger().info(f"ChessEngineNode ready. Using engine: {engine_path}")
 
     def cancel_cb(self, goal_handle):
         """
