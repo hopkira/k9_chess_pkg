@@ -12,10 +12,7 @@ setup(
     data_files=[
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
-        ('share/' + package_name + '/assets', [
-            'assets/stockfish',
-            'assets/Titans.bin'
-        ]),
+        (os.path.join('share', package_name, 'assets'), glob('k9_chess/assets/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

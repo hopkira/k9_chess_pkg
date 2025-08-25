@@ -1,6 +1,7 @@
 # k9_chess/chess_engine_node.py
 import pathlib
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse
 from k9_chess_interfaces.action import ComputeMove
@@ -19,10 +20,10 @@ class ChessEngineNode(Node):
     def __init__(self):
         super().__init__('chess_engine')
 
-        # Resolve assets path relative to this file
-        pkg_dir = pathlib.Path(__file__).parent  # points to k9_chess/
-        titan_path = pkg_dir / 'assets' / 'Titans.bin'
-        stockfish_path = pkg_dir / 'assets' / 'stockfish'
+
+        assets_dir = pathlib.Path(get_package_share_directory('k9_chess')) / 'assets'
+        titan_path = assets_dir / 'Titans.bin'
+        stockfish_path = assets_dir / 'stockfish'
 
         # Check that binaries exist
         if not titan_path.exists():
