@@ -6,6 +6,7 @@ from k9_chess_interfaces.action import ComputeMove
 from k9_chess_interfaces.msg import BoardState
 from k9_chess_interfaces.srv import GetState
 import py_trees
+import asyncio
 
 class ChessBT(Node):
     def __init__(self):
@@ -81,10 +82,14 @@ class ChessComputeMove(py_trees.behaviour.Behaviour):
     def update(self):
         if self._running:
             return py_trees.common.Status.RUNNING
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-        # Schedule async task using rclpy executor
+        loop.create_task(self._do_request())
         self._running = True
-        self.node.get_clock().create_timer(0.01, lambda: self._start_async())
         return py_trees.common.Status.RUNNING
 
     def _start_async(self):
