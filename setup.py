@@ -10,9 +10,11 @@ setup(
     packages=find_packages(include=[package_name, f"{package_name}.*"]),
 
     data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'assets'), ['assets/Titans.bin', 'assets/stockfish'])
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
-        (os.path.join('share', package_name, 'assets'), glob('k9_chess/assets/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
