@@ -6,7 +6,7 @@ from k9_chess_interfaces.action import ComputeMove
 from k9_chess_interfaces.msg import BoardState
 from k9_chess_interfaces.srv import GetState
 import py_trees
-from rclpy.task import create_task
+import asyncio
 import chess
 
 class ChessBT(Node):
@@ -106,7 +106,7 @@ class ChessComputeMove(py_trees.behaviour.Behaviour):
 
         # Schedule async task to query state and request move
         self._running = True
-        create_task(self._do_request())
+        asyncio.create_task(self._do_request())
         return py_trees.common.Status.RUNNING
 
     async def _do_request(self):
