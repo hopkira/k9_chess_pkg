@@ -31,6 +31,7 @@ def main() -> None:
 
     print("K9 chess deployment check")
     print("-------------------------")
+    print(f"Python interpreter:    {sys.executable}")
     print(f"Phantom username:     {os.getenv('LICHESS_USERNAME', '<config/default hopkira>')}")
     print(f"LICHESS_BOT_TOKEN:    {_present('LICHESS_BOT_TOKEN')}")
     print(f"STOCKFISH_PATH:       {stockfish}")

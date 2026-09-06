@@ -34,11 +34,9 @@ setup(
     maintainer_email="hopkira@googlemail.com",
     description="K9 Lichess/Phantom chess manager and Stockfish action server.",
     license="Apache-2.0",
-    entry_points={
-        "console_scripts": [
-            "chess_manager = k9_chess_pkg.chess_manager_node:main",
-            "chess_engine = k9_chess_pkg.chess_engine_node:main",
-            "chess_check = k9_chess_pkg.check_setup:main",
-        ],
-    },
+    scripts=[
+        "scripts/chess_manager",
+        "scripts/chess_engine",
+        "scripts/chess_check",
+    ],
 )
