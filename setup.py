@@ -1,34 +1,44 @@
-import os
-from setuptools import setup, find_packages
 from glob import glob
+import os
 
-package_name = 'k9_chess'
+from setuptools import find_packages, setup
+
+
+package_name = "k9_chess_pkg"
 
 setup(
     name=package_name,
-    version='0.0.0',
-    packages=find_packages(include=[package_name, f"{package_name}.*"]),
-
+    version="0.2.1",
+    packages=find_packages(exclude=["test"]),
     data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'assets'), ['assets/Titans.bin', 'assets/stockfish']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (
+            "share/ament_index/resource_index/packages",
+            ["resource/" + package_name],
+        ),
+        (
+            "share/" + package_name,
+            ["package.xml", "README.md", "ARCHITECTURE.md", "VERSION"],
+        ),
+        (
+            os.path.join("share", package_name, "config"),
+            glob("config/*.yaml"),
+        ),
+        (
+            os.path.join("share", package_name, "launch"),
+            glob("launch/*.launch.py"),
+        ),
     ],
-    install_requires=['setuptools'],
+    install_requires=["setuptools"],
     zip_safe=True,
-    maintainer='hopkira',
-    maintainer_email='hopkira@todo.todo',
-    description='K9 Chess Package',
-    license='Apache-2.0',
+    maintainer="hopkira",
+    maintainer_email="hopkira@googlemail.com",
+    description="K9 Lichess/Phantom chess manager and Stockfish action server.",
+    license="Apache-2.0",
     entry_points={
-        'console_scripts': [
-            'game_manager = k9_chess.game_manager_node:main',
-            'move_sender = k9_chess.move_sender_node:main',
-            'chess_engine = k9_chess.chess_engine_node:main',
-            'chess_state = k9_chess.chess_state_node:main',
-            'chess_bt = k9_chess.chess_bt_node:main',
+        "console_scripts": [
+            "chess_manager = k9_chess_pkg.chess_manager_node:main",
+            "chess_engine = k9_chess_pkg.chess_engine_node:main",
+            "chess_check = k9_chess_pkg.check_setup:main",
         ],
     },
 )

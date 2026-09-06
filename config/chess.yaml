@@ -1,0 +1,31 @@
+chess_manager:
+  ros__parameters:
+    lichess_url: "https://lichess.org/api/"
+
+    # Fixed technical Lichess account used by the Phantom phone app.
+    # The real person's name is supplied by the central K9 BT at game setup.
+    phantom_player_username: "hopkira"
+
+    # K9 accepts a challenge only when /chess/start_game has armed the manager,
+    # and only when the incoming challenge is from phantom_player_username.
+    unexpected_challenge_decline_reason: "generic"
+
+    engine_action: "/chess/compute_move"
+    engine_think_time_sec: 2.0
+    use_opening_book: true
+
+    # The BT owns spoken output. Leave this false unless you also want K9's
+    # deterministic move instruction mirrored into Lichess player chat.
+    mirror_move_instruction_to_chat: false
+
+    stream_reconnect_max_sec: 30.0
+
+chess_engine:
+  ros__parameters:
+    # Paths default from STOCKFISH_PATH / K9_CHESS_BOOK_PATH environment
+    # variables, falling back to the historic Pi installation paths.
+    engine_threads: 2
+    engine_hash_mb: 128
+    book_eval_time_sec: 0.15
+    result_eval_time_sec: 0.15
+    warmup_enabled: true
