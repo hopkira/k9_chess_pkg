@@ -491,11 +491,35 @@ class ChessManagerNode(Node):
                 response = self._bot_api.game_stream(game_id)
                 self._game_response = response
                 delay = 1.0
+                saw_terminal_state = False
 
                 for event in LichessAPI.iter_json_lines(response):
                     if self._shutdown_event.is_set():
                         return
+
+                    # The network thread can reach EOF before the ROS executor
+                    # has processed the final queued gameState. Detect a
+                    # terminal state directly from the stream so normal
+                    # game completion is not reported as a reconnect warning.
+                    event_type = str(event.get("type", ""))
+                    terminal_status = ""
+                    if event_type == "gameState":
+                        terminal_status = str(
+                            event.get("status", "")
+                        )
+                    elif event_type == "gameFull":
+                        game_state = event.get("state", {}) or {}
+                        terminal_status = str(
+                            game_state.get("status", "")
+                        )
+
+                    if terminal_status in TERMINAL_LICHESS_STATES:
+                        saw_terminal_state = True
+
                     self._network_queue.put(("GAME", game_id, event))
+
+                if saw_terminal_state:
+                    return
 
                 with self._lock:
                     still_active = (
@@ -548,8 +572,6 @@ class ChessManagerNode(Node):
                 self._handle_lobby_event(item[1])
             elif kind == "GAME":
                 self._handle_game_event(item[1], item[2])
-            elif kind == "MOVE_SENT":
-                self._handle_move_sent(item[1], item[2])
             elif kind == "MOVE_SEND_ERROR":
                 self._handle_move_send_error(item[1], item[2], item[3])
             elif kind == "CHALLENGE_ACCEPTED":
@@ -595,7 +617,7 @@ class ChessManagerNode(Node):
                 active = self._runtime.game_active
                 display_name = self._runtime.player_name
 
-            # All physical K9 games are the fixed hopkira -> k9_bot Lichess
+            # All physical K9 games are the fixed hopkira -> K9-chess-bot Lichess
             # route.  Never accept a challenge from another account.
             if not expected_match:
                 threading.Thread(
@@ -1124,10 +1146,16 @@ class ChessManagerNode(Node):
             evaluation_after_valid=result.position_evaluation_valid,
             evaluation_after_pawns=float(result.position_eval_pawns),
             evaluation_delta_pawns=delta,
+            is_mate=bool(result.position_is_mate),
+            mate_in=int(result.position_mate_in),
             message=(
                 "Evaluation change caused by the human's previous move"
                 if delta_valid
-                else "Current position evaluated"
+                else (
+                    "Current position has a forced mate"
+                    if result.position_is_mate
+                    else "Current position evaluated"
+                )
             ),
         )
 
@@ -1140,8 +1168,12 @@ class ChessManagerNode(Node):
             self._runtime.evaluation_pawns = float(
                 result.position_eval_pawns
             )
-            self._runtime.evaluation_is_mate = False
-            self._runtime.mate_in = 0
+            self._runtime.evaluation_is_mate = bool(
+                result.position_is_mate
+            )
+            self._runtime.mate_in = int(
+                result.position_mate_in
+            )
 
             self._runtime.pending_move = facts.uci
             self._pending_result_eval_valid = bool(
@@ -1188,6 +1220,20 @@ class ChessManagerNode(Node):
             speech_hint=hint,
         )
         self._publish_status()
+
+        # Publish/queue the transport-submission event before starting the
+        # HTTP worker.  Lichess can echo a bot move through the game stream
+        # faster than requests.post() returns, so publishing only after the
+        # HTTP response produced the misleading order CONFIRMED -> SENT.
+        #
+        # K9_MOVE_SENT therefore means "handed to the Lichess transport".
+        # K9_MOVE_CONFIRMED remains the authoritative acknowledgement from
+        # the Lichess game stream.
+        self._publish_event(
+            "K9_MOVE_SENT",
+            game_id=game_id,
+            uci=facts.uci,
+        )
 
         threading.Thread(
             target=self._send_move_worker,
@@ -1236,21 +1282,10 @@ class ChessManagerNode(Node):
                     self._network_queue.put(
                         ("STREAM_NOTICE", f"Lichess chat failed: {exc}")
                     )
-            self._network_queue.put(("MOVE_SENT", game_id, move_uci))
         except Exception as exc:
             self._network_queue.put(
                 ("MOVE_SEND_ERROR", game_id, move_uci, str(exc))
             )
-
-    def _handle_move_sent(self, game_id: str, move_uci: str) -> None:
-        with self._lock:
-            if game_id != self._runtime.game_id:
-                return
-        self._publish_event(
-            "K9_MOVE_SENT",
-            game_id=game_id,
-            uci=move_uci,
-        )
 
     def _handle_move_send_error(
         self,

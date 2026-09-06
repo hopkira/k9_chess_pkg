@@ -147,6 +147,8 @@ class ChessEngineNode(Node):
         result.source = ""
         result.position_evaluation_valid = False
         result.position_eval_pawns = 0.0
+        result.position_is_mate = False
+        result.position_mate_in = 0
         result.resulting_evaluation_valid = False
         result.resulting_eval_pawns = 0.0
         result.resulting_is_mate = False
@@ -174,6 +176,8 @@ class ChessEngineNode(Node):
             source = ""
             position_valid = False
             position_eval = 0.0
+            position_is_mate = False
+            position_mate_in = 0
 
             if request.use_book and self.opening_book_path.is_file():
                 try:
@@ -187,8 +191,8 @@ class ChessEngineNode(Node):
                     (
                         position_valid,
                         position_eval,
-                        _position_is_mate,
-                        _position_mate_in,
+                        position_is_mate,
+                        position_mate_in,
                     ) = self._short_evaluate(
                         board,
                         k9_colour,
@@ -210,6 +214,8 @@ class ChessEngineNode(Node):
                     best_move,
                     position_valid,
                     position_eval,
+                    position_is_mate,
+                    position_mate_in,
                     cancelled,
                 ) = self._analyse_for_move(
                     board,
@@ -261,6 +267,8 @@ class ChessEngineNode(Node):
             result.source = source
             result.position_evaluation_valid = position_valid
             result.position_eval_pawns = float(position_eval)
+            result.position_is_mate = bool(position_is_mate)
+            result.position_mate_in = int(position_mate_in)
             result.resulting_evaluation_valid = resulting_valid
             result.resulting_eval_pawns = float(resulting_eval)
             result.resulting_is_mate = resulting_is_mate
@@ -283,8 +291,8 @@ class ChessEngineNode(Node):
         k9_colour: chess.Color,
         think_time: float,
         goal_handle,
-    ) -> tuple[chess.Move | None, bool, float, bool]:
-        """Run interruptible analysis and return its principal-variation move."""
+    ) -> tuple[chess.Move | None, bool, float, bool, int, bool]:
+        """Run interruptible analysis and return move plus evaluation metadata."""
         latest_info = {}
         best_move = None
 
@@ -319,7 +327,7 @@ class ChessEngineNode(Node):
 
                 if goal_handle.is_cancel_requested:
                     analysis.stop()
-                    return None, False, 0.0, True
+                    return None, False, 0.0, False, 0, True
 
             best = analysis.wait()
             if best_move is None:
@@ -327,16 +335,22 @@ class ChessEngineNode(Node):
 
         valid = False
         eval_pawns = 0.0
+        is_mate = False
+        mate_in = 0
+
         score = latest_info.get("score")
         if score is not None:
             pov = score.pov(k9_colour)
-            if not pov.is_mate():
+            if pov.is_mate():
+                is_mate = True
+                mate_in = int(pov.mate() or 0)
+            else:
                 cp = pov.score()
                 if cp is not None:
                     valid = True
                     eval_pawns = float(cp) / 100.0
 
-        return best_move, valid, eval_pawns, False
+        return best_move, valid, eval_pawns, is_mate, mate_in, False
 
     def _short_evaluate(
         self,
