@@ -39,4 +39,9 @@ setup(
         "scripts/chess_engine",
         "scripts/chess_check",
     ],
+    entry_points={
+        'console_scripts': [
+            'phantom_board = k9_chess_pkg.phantom_board_node:main',
+        ],
+    },
 )

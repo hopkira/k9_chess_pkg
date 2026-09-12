@@ -1,0 +1,6 @@
+phantom_board:
+  ros__parameters:
+    # Empty means discover by Phantom service UUID.
+    address: ""
+    scan_timeout: 15.0
+    auto_connect: true
