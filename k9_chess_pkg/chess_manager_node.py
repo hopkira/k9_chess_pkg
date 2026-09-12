@@ -792,9 +792,8 @@ class ChessManagerNode(Node):
         )
 
         self.get_logger().info(
-            "Rejected human move %s; resetting Phantom to FEN %s",
-            attempted_uci,
-            self._board.fen(),
+            f"Rejected human move {attempted_uci}; "
+            f"resetting Phantom to FEN {self._board.fen()}"
         )
 
     # ------------------------------------------------------------------
@@ -982,9 +981,8 @@ class ChessManagerNode(Node):
 
         if feedback.depth and feedback.depth % 5 == 0:
             self.get_logger().debug(
-                "Chess engine depth=%s nps=%s",
-                feedback.depth,
-                feedback.nodes_per_second,
+                f"Chess engine depth={feedback.depth} "
+                f"nps={feedback.nodes_per_second}"
             )
 
     def _engine_goal_response(self, future) -> None:
@@ -1274,7 +1272,7 @@ class ChessManagerNode(Node):
 
         self._publish_event(
             "YOUR_MOVE",
-            speech_hint="Your move.",
+            speech_hint="Your turn to move.",
         )
 
     def _handle_motor_timeout(self) -> None:
