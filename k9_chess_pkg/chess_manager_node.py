@@ -147,6 +147,14 @@ class ChessManagerNode(Node):
             "phantom_motor_timeout_sec",
             120.0,
         )
+        self.declare_parameter(
+            "phantom_turn_settle_sec",
+            0.50,
+        )
+        self.declare_parameter(
+            "phantom_completion_guard_sec",
+            0.50,
+        )
 
         self.engine_action_name = str(
             self.get_parameter("engine_action").value
@@ -186,6 +194,22 @@ class ChessManagerNode(Node):
             float(
                 self.get_parameter(
                     "phantom_motor_timeout_sec"
+                ).value
+            ),
+        )
+        self.phantom_turn_settle_sec = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "phantom_turn_settle_sec"
+                ).value
+            ),
+        )
+        self.phantom_completion_guard_sec = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "phantom_completion_guard_sec"
                 ).value
             ),
         )
@@ -319,6 +343,7 @@ class ChessManagerNode(Node):
         self._recovering_illegal_move = False
         self._awaiting_motor_move = False
         self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
         self._pending_k9_facts: Optional[MoveFacts] = None
 
         self._engine_goal_handle = None
@@ -411,6 +436,7 @@ class ChessManagerNode(Node):
         self._recovering_illegal_move = False
         self._awaiting_motor_move = False
         self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
         self._pending_k9_facts = None
         self._clear_pending_locked()
         self._last_post_k9_eval_valid = False
@@ -581,6 +607,27 @@ class ChessManagerNode(Node):
             status in {"Board Playing", "BLE Playing"}
             and self._awaiting_motor_move
         ):
+            # Phantom emits "BLE Playing" as part of accepting the preceding
+            # human move, before the computer motor command is issued.  An
+            # opening-book engine result can arrive quickly enough that this
+            # residual status races with the newly armed K9 move.  A physical
+            # motor move cannot plausibly complete inside this short guard
+            # interval, so ignore such an early playing status and wait for the
+            # post-motion one.
+            elapsed = (
+                time.monotonic()
+                - self._motor_move_sent_at
+                if self._motor_move_sent_at > 0.0
+                else 0.0
+            )
+
+            if elapsed < self.phantom_completion_guard_sec:
+                self.get_logger().debug(
+                    "Ignoring early Phantom playing status "
+                    f"{status!r} {elapsed:.3f}s after K9 move publication"
+                )
+                return
+
             self._confirm_physical_k9_move()
             return
 
@@ -698,6 +745,17 @@ class ChessManagerNode(Node):
             String(
                 data=self._runtime.human_colour.lower()
             )
+        )
+
+        # The official application waits for the side-selection transaction
+        # (including Phantom's 0x06/0x04 acknowledgement) before sending the
+        # computer move.  Opening-book moves can return essentially
+        # immediately, so give the BLE adapter a small window to complete that
+        # handshake before an engine request is allowed.
+        self._retry_move_after = max(
+            self._retry_move_after,
+            time.monotonic()
+            + self.phantom_turn_settle_sec,
         )
 
         self._runtime.evaluation_valid = False
@@ -1202,8 +1260,9 @@ class ChessManagerNode(Node):
         )
 
         self._awaiting_motor_move = True
+        self._motor_move_sent_at = time.monotonic()
         self._motor_move_deadline = (
-            time.monotonic()
+            self._motor_move_sent_at
             + self.phantom_motor_timeout_sec
         )
 
@@ -1227,6 +1286,7 @@ class ChessManagerNode(Node):
 
         self._awaiting_motor_move = False
         self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
         self._pending_k9_facts = None
 
         if not pending_uci or facts is None:
@@ -1281,6 +1341,7 @@ class ChessManagerNode(Node):
 
         self._awaiting_motor_move = False
         self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
         self._pending_k9_facts = None
         self._runtime.pending_move = ""
         self._clear_pending_evaluation_locked()
@@ -1490,6 +1551,7 @@ class ChessManagerNode(Node):
         self._awaiting_motor_move = False
         self._recovering_illegal_move = False
         self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
         self._pending_k9_facts = None
 
         self._clear_pending_locked()
