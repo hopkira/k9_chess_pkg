@@ -4,3 +4,7 @@ phantom_board:
     address: ""
     scan_timeout: 15.0
     auto_connect: true
+
+    # Observed values: silence, slow, medium, fast, blitz.
+    # K9 deliberately uses Fast.
+    movement_speed: "fast"

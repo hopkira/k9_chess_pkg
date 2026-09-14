@@ -51,6 +51,7 @@ from phantom_chessboard import (
     CleanEvent,
     CorrectionEvent,
     MoveEvent,
+    MovementSpeed,
     PhantomBoard,
     ProtocolEvent,
     StatusEvent,
@@ -82,6 +83,10 @@ class PhantomBoardNode(Node):
             "auto_connect",
             True,
         )
+        self.declare_parameter(
+            "movement_speed",
+            "fast",
+        )
 
         self._address = (
             self.get_parameter(
@@ -97,6 +102,14 @@ class PhantomBoardNode(Node):
             )
             .get_parameter_value()
             .double_value
+        )
+
+        self._movement_speed = MovementSpeed.parse(
+            self.get_parameter(
+                "movement_speed"
+            )
+            .get_parameter_value()
+            .string_value
         )
 
         state_qos = QoSProfile(
@@ -215,6 +228,16 @@ class PhantomBoardNode(Node):
             10,
         )
 
+        self.create_subscription(
+            String,
+            (
+                "/chess/phantom/"
+                "set_speed"
+            ),
+            self._on_set_speed,
+            10,
+        )
+
         self.create_service(
             Trigger,
             (
@@ -279,6 +302,11 @@ class PhantomBoardNode(Node):
             )
             .get_parameter_value()
             .bool_value
+        )
+
+        self.get_logger().info(
+            "Phantom movement speed configured as "
+            f"{self._movement_speed.name}"
         )
 
         if auto_connect:
@@ -646,6 +674,9 @@ class PhantomBoardNode(Node):
                             "human_side"
                         ]
                     ),
+                    movement_speed=(
+                        self._movement_speed
+                    ),
                 ),
                 "new game",
             )
@@ -729,6 +760,35 @@ class PhantomBoardNode(Node):
         except Exception as exc:
             self.get_logger().error(
                 "Cannot set side: "
+                f"{exc}"
+            )
+
+    def _on_set_speed(
+        self,
+        message: String,
+    ) -> None:
+        """Change Phantom's physical movement speed during a live game."""
+        try:
+            requested = MovementSpeed.parse(
+                message.data.strip()
+            )
+            board = self._require_board()
+
+            self._movement_speed = requested
+
+            self._submit(
+                board.set_movement_speed(
+                    requested
+                ),
+                (
+                    "set movement speed "
+                    f"{requested.name.lower()}"
+                ),
+            )
+
+        except Exception as exc:
+            self.get_logger().error(
+                "Cannot set movement speed: "
                 f"{exc}"
             )
 
