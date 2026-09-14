@@ -155,6 +155,18 @@ class ChessManagerNode(Node):
             "phantom_completion_guard_sec",
             0.50,
         )
+        self.declare_parameter(
+            "draw_accept_losing_threshold_pawns",
+            -0.50,
+        )
+        self.declare_parameter(
+            "draw_accept_equal_band_pawns",
+            0.20,
+        )
+        self.declare_parameter(
+            "draw_accept_equal_after_ply",
+            60,
+        )
 
         self.engine_action_name = str(
             self.get_parameter("engine_action").value
@@ -210,6 +222,27 @@ class ChessManagerNode(Node):
             float(
                 self.get_parameter(
                     "phantom_completion_guard_sec"
+                ).value
+            ),
+        )
+        self.draw_accept_losing_threshold_pawns = float(
+            self.get_parameter(
+                "draw_accept_losing_threshold_pawns"
+            ).value
+        )
+        self.draw_accept_equal_band_pawns = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "draw_accept_equal_band_pawns"
+                ).value
+            ),
+        )
+        self.draw_accept_equal_after_ply = max(
+            0,
+            int(
+                self.get_parameter(
+                    "draw_accept_equal_after_ply"
                 ).value
             ),
         )
@@ -323,6 +356,12 @@ class ChessManagerNode(Node):
             10,
         )
 
+        self._phantom_setup_position_pub = self.create_publisher(
+            String,
+            "/chess/phantom/setup_position",
+            10,
+        )
+
         self._phantom_home_client = self.create_client(
             Trigger,
             "/chess/phantom/home",
@@ -345,6 +384,12 @@ class ChessManagerNode(Node):
         self._motor_move_deadline = 0.0
         self._motor_move_sent_at = 0.0
         self._pending_k9_facts: Optional[MoveFacts] = None
+
+        # Terminal voice commands can end a game while a physical motor move
+        # is still completing.  The logical game ends immediately; physical
+        # reset waits until the mechanism is safe and then stops at Waiting Side.
+        self._post_game_reset_pending = False
+        self._post_game_reset_in_progress = False
 
         self._engine_goal_handle = None
         self._engine_goal_fen = ""
@@ -518,9 +563,75 @@ class ChessManagerNode(Node):
             self._finish_game(
                 status="resign",
                 winner=winner,
+                reset_board=True,
             )
             response.success = True
             response.message = "K9 resigned"
+            return response
+
+        if command == "HUMAN_RESIGN":
+            if not self._runtime.game_active:
+                self._publish_event(
+                    "CHESS_COMMAND_REJECTED",
+                    speech_hint="There is no chess game in progress.",
+                    message="No active chess game",
+                )
+                response.success = False
+                response.message = "No active chess game"
+                return response
+
+            winner = self._runtime.k9_colour
+            self._finish_game(
+                status="resign",
+                winner=winner,
+                reset_board=True,
+            )
+            response.success = True
+            response.message = "Human resignation accepted"
+            return response
+
+        if command == "OFFER_DRAW":
+            if not self._runtime.game_active:
+                self._publish_event(
+                    "CHESS_COMMAND_REJECTED",
+                    speech_hint="There is no chess game in progress.",
+                    message="No active chess game",
+                )
+                response.success = False
+                response.message = "No active chess game"
+                return response
+
+            accept, reason = self._consider_draw_offer()
+
+            if accept:
+                self._publish_event(
+                    "DRAW_OFFER_ACCEPTED",
+                    speech_hint=(
+                        "Affirmative. I accept your offer of a draw."
+                    ),
+                    message=reason,
+                )
+                self._finish_game(
+                    status="drawAgreement",
+                    winner="",
+                    reset_board=True,
+                    speech_hint=(
+                        "Affirmative. I accept your offer of a draw."
+                    ),
+                )
+                response.success = True
+                response.message = "Draw accepted"
+                return response
+
+            self._publish_event(
+                "DRAW_OFFER_DECLINED",
+                speech_hint=(
+                    "Negative. I decline your offer of a draw."
+                ),
+                message=reason,
+            )
+            response.success = True
+            response.message = "Draw declined"
             return response
 
         if command == "ABORT":
@@ -554,7 +665,8 @@ class ChessManagerNode(Node):
 
         response.success = False
         response.message = (
-            "command must be SUSPEND, RESUME, RESIGN, ABORT or RESET"
+            "command must be SUSPEND, RESUME, RESIGN, HUMAN_RESIGN, "
+            "OFFER_DRAW, ABORT or RESET"
         )
         return response
 
@@ -578,6 +690,8 @@ class ChessManagerNode(Node):
                 "PHANTOM_CONNECTED",
                 message="Phantom Chessboard connected",
             )
+            if self._post_game_reset_pending:
+                self._start_post_game_board_reset()
             return
 
         if not connected and previously_connected:
@@ -598,6 +712,30 @@ class ChessManagerNode(Node):
         status = str(msg.data).strip()
 
         if not status:
+            return
+
+        if (
+            status == "Waiting Side"
+            and self._post_game_reset_in_progress
+        ):
+            self._complete_post_game_board_reset()
+            return
+
+        if (
+            status in {"Board Playing", "BLE Playing"}
+            and self._post_game_reset_pending
+            and self._awaiting_motor_move
+        ):
+            # A voice resignation/draw may arrive while the mechanism is still
+            # completing K9's move.  The game is already logically over; wait
+            # for motion to stop, discard the uncommitted move, then reset.
+            self._awaiting_motor_move = False
+            self._motor_move_deadline = 0.0
+            self._motor_move_sent_at = 0.0
+            self._pending_k9_facts = None
+            self._runtime.pending_move = ""
+            self._clear_pending_evaluation_locked()
+            self._start_post_game_board_reset()
             return
 
         # Motor completion has priority because "Board Playing" after a K9
@@ -1404,6 +1542,42 @@ class ChessManagerNode(Node):
             except Exception:
                 pass
 
+    def _consider_draw_offer(self) -> tuple[bool, str]:
+        """Decide whether K9 should accept a human draw offer."""
+        if self._runtime.evaluation_is_mate:
+            mate_in = int(self._runtime.mate_in)
+            if mate_in < 0:
+                return True, "forced mate against K9"
+            if mate_in > 0:
+                return False, "K9 has a forced mate"
+
+        if self._runtime.evaluation_valid:
+            evaluation = float(
+                self._runtime.evaluation_pawns
+            )
+
+            if evaluation <= self.draw_accept_losing_threshold_pawns:
+                return (
+                    True,
+                    f"K9 evaluation is {evaluation:+.2f} pawns",
+                )
+
+            if (
+                self._runtime.ply >= self.draw_accept_equal_after_ply
+                and abs(evaluation) <= self.draw_accept_equal_band_pawns
+            ):
+                return (
+                    True,
+                    "late-game position is approximately equal",
+                )
+
+            return (
+                False,
+                f"K9 evaluation is {evaluation:+.2f} pawns",
+            )
+
+        return False, "no current engine evaluation is available"
+
     # ------------------------------------------------------------------
     # End-of-game handling
     # ------------------------------------------------------------------
@@ -1465,6 +1639,8 @@ class ChessManagerNode(Node):
         *,
         status: str,
         winner: str = "",
+        reset_board: bool = False,
+        speech_hint: str = "",
     ) -> None:
         """Publish terminal state while preserving the BT's existing format."""
         if not (
@@ -1497,7 +1673,9 @@ class ChessManagerNode(Node):
 
         self._cancel_engine_goal()
 
-        if winner_name and winner_name == self._runtime.k9_colour:
+        if speech_hint:
+            hint = speech_hint
+        elif winner_name and winner_name == self._runtime.k9_colour:
             hint = "The game is over. I have won."
         elif winner_name:
             hint = "Congratulations. You have won."
@@ -1512,6 +1690,77 @@ class ChessManagerNode(Node):
             colour=winner_name,
             speech_hint=hint,
             message=result_text,
+        )
+        self._publish_status()
+
+        if reset_board:
+            self._queue_post_game_board_reset()
+
+    def _queue_post_game_board_reset(self) -> None:
+        """Restore the physical board after a terminal voice command."""
+        self._post_game_reset_pending = True
+
+        if self._awaiting_motor_move:
+            self._publish_event(
+                "BOARD_RESET_DEFERRED",
+                message="Waiting for the current physical move to finish",
+            )
+            return
+
+        self._start_post_game_board_reset()
+
+    def _start_post_game_board_reset(self) -> None:
+        """Request standard-position setup when the mechanism is safe."""
+        if (
+            not self._post_game_reset_pending
+            or self._post_game_reset_in_progress
+            or self._awaiting_motor_move
+            or not self._phantom_connected
+        ):
+            return
+
+        self._post_game_reset_in_progress = True
+
+        self._phantom_setup_position_pub.publish(
+            String(
+                data=json.dumps(
+                    {"fen": chess.STARTING_FEN},
+                    separators=(",", ":"),
+                )
+            )
+        )
+
+        self._publish_event(
+            "BOARD_RESET_STARTED",
+            message="Restoring the standard starting position",
+        )
+
+    def _complete_post_game_board_reset(self) -> None:
+        """Mark the terminal reset complete while retaining result context."""
+        self._post_game_reset_pending = False
+        self._post_game_reset_in_progress = False
+
+        self._board = chess.Board()
+        self._runtime.state = State.IDLE
+        self._runtime.game_active = False
+        self._runtime.game_suspended = False
+        self._runtime.engine_busy = False
+        self._runtime.pending_move = ""
+        self._runtime.fen = self._board.fen()
+        self._runtime.ply = 0
+        self._runtime.side_to_move = "WHITE"
+        self._runtime.error = ""
+
+        self._awaiting_motor_move = False
+        self._recovering_illegal_move = False
+        self._motor_move_deadline = 0.0
+        self._motor_move_sent_at = 0.0
+        self._pending_k9_facts = None
+        self._clear_pending_locked()
+
+        self._publish_event(
+            "BOARD_RESET_COMPLETE",
+            message="Board restored; chess is idle",
         )
         self._publish_status()
 
@@ -1553,6 +1802,8 @@ class ChessManagerNode(Node):
         self._motor_move_deadline = 0.0
         self._motor_move_sent_at = 0.0
         self._pending_k9_facts = None
+        self._post_game_reset_pending = False
+        self._post_game_reset_in_progress = False
 
         self._clear_pending_locked()
         self._last_post_k9_eval_valid = False

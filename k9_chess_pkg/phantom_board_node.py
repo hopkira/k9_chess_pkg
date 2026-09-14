@@ -232,6 +232,16 @@ class PhantomBoardNode(Node):
             String,
             (
                 "/chess/phantom/"
+                "setup_position"
+            ),
+            self._on_setup_position,
+            10,
+        )
+
+        self.create_subscription(
+            String,
+            (
+                "/chess/phantom/"
                 "set_speed"
             ),
             self._on_set_speed,
@@ -790,6 +800,35 @@ class PhantomBoardNode(Node):
             self.get_logger().error(
                 "Cannot set movement speed: "
                 f"{exc}"
+            )
+
+    def _on_setup_position(
+        self,
+        message: String,
+    ) -> None:
+        """Reconcile the physical board to a FEN without starting a game."""
+        try:
+            value = json.loads(
+                message.data
+            )
+            board = (
+                self._require_board()
+            )
+
+            self._submit(
+                board.setup_position(
+                    value.get(
+                        "fen",
+                        STARTING_FEN,
+                    )
+                ),
+                "setup position",
+            )
+
+        except Exception as exc:
+            self.get_logger().error(
+                "Invalid setup position "
+                f"request: {exc}"
             )
 
     def _on_reset_detection(
